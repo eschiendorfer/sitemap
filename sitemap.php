@@ -3,23 +3,23 @@
  * 2007-2016 PrestaShop
  *
  * Thirty Bees is an extension to the PrestaShop e-commerce software developed by PrestaShop SA
- * Copyright (C) 2017 Thirty Bees
+ * Copyright (C) 2017-2024 thirty bees
  *
  * NOTICE OF LICENSE
  *
  * This source file is subject to the Academic Free License (AFL 3.0)
  * that is bundled with this package in the file LICENSE.txt.
  * It is also available through the world-wide-web at this URL:
- * http://opensource.org/licenses/afl-3.0.php
+ * https://opensource.org/licenses/afl-3.0.php
  * If you did not receive a copy of the license and are unable to
  * obtain it through the world-wide-web, please send an email
  * to license@thirtybees.com so we can send you a copy immediately.
  *
  * @author    Thirty Bees <modules@thirtybees.com>
  * @author    PrestaShop SA <contact@prestashop.com>
- * @copyright 2017 Thirty Bees
+ * @copyright 2017-2024 thirty bees
  * @copyright 2007-2016 PrestaShop SA
- * @license   http://opensource.org/licenses/afl-3.0.php  Academic Free License (AFL 3.0)
+ * @license   https://opensource.org/licenses/afl-3.0.php  Academic Free License (AFL 3.0)
  *  PrestaShop is an internationally registered trademark & property of PrestaShop SA
  */
 
@@ -32,19 +32,25 @@ if (!defined('_TB_VERSION_')) {
  */
 class Sitemap extends Module
 {
+    /**
+     * Hook name
+     */
     const HOOK_ADD_URLS = 'gSitemapAppendUrls';
 
+    /**
+     * @var bool
+     */
     public $cron = false;
-    protected $sql_checks = [];
 
     /**
      * Gsitemap constructor.
+     * @throws PrestaShopException
      */
     public function __construct()
     {
         $this->name = 'sitemap';
         $this->tab = 'seo';
-        $this->version = '4.0.3';
+        $this->version = '4.2.0';
         $this->author = 'thirty bees';
         $this->need_instance = 0;
 
@@ -52,19 +58,6 @@ class Sitemap extends Module
 
         $this->displayName = $this->l('Sitemap');
         $this->description = $this->l('Generate your sitemap file');
-
-        $this->type_array = ['home', 'meta', 'product', 'category', 'manufacturer', 'supplier', 'cms', 'module'];
-
-        $metas = Db::getInstance()->ExecuteS('SELECT * FROM `'._DB_PREFIX_.'meta` ORDER BY `id_meta` ASC');
-        $disabledMetas = explode(',', Configuration::get('SITEMAP_DISABLE_LINKS'));
-        foreach ($metas as $meta) {
-            if (in_array($meta['id_meta'], $disabledMetas)) {
-                if (($key = array_search($meta['page'], $this->type_array)) !== false) {
-                    unset($this->type_array[$key]);
-                }
-            }
-        }
-
     }
 
     /**
@@ -74,6 +67,9 @@ class Sitemap extends Module
      * Step 2 - Install the Addon and create a database table to store Sitemap files name by shop
      *
      * @return boolean Installation result
+     *
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
     public function install()
     {
@@ -85,8 +81,6 @@ class Sitemap extends Module
                      'SITEMAP_PRIORITY_SUPPLIER'     => 0.6,
                      'SITEMAP_PRIORITY_CMS'          => 0.5,
                      'SITEMAP_FREQUENCY'             => 'weekly',
-                     'SITEMAP_CHECK_IMAGE_FILE'      => false,
-                     'SITEMAP_LAST_EXPORT'           => false,
                  ] as $key => $val) {
             if (!Configuration::updateValue($key, $val)) {
                 return false;
@@ -102,11 +96,13 @@ class Sitemap extends Module
      * Registers hook(s)
      *
      * @return boolean
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
     protected function _installHook()
     {
-        $hook = new Hook();
-        $hook->name = self::HOOK_ADD_URLS;
+        $hook = new Hook(Hook::getIdByName(static::HOOK_ADD_URLS));
+        $hook->name = static::HOOK_ADD_URLS;
         $hook->title = 'GSitemap Append URLs';
         $hook->description = 'This hook allows a module to add URLs to a generated sitemap';
         $hook->position = true;
@@ -122,28 +118,23 @@ class Sitemap extends Module
      * Step 3 - Uninstallation of the Addon itself
      *
      * @return boolean Uninstallation result
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
     public function uninstall()
     {
         foreach ([
-                     'SITEMAP_PRIORITY_HOME'         => '',
-                     'SITEMAP_PRIORITY_PRODUCT'      => '',
-                     'SITEMAP_PRIORITY_CATEGORY'     => '',
-                     'SITEMAP_PRIORITY_MANUFACTURER' => '',
-                     'SITEMAP_PRIORITY_SUPPLIER'     => '',
-                     'SITEMAP_PRIORITY_CMS'          => '',
-                     'SITEMAP_FREQUENCY'             => '',
-                     'SITEMAP_CHECK_IMAGE_FILE'      => '',
-                     'SITEMAP_LAST_EXPORT'           => '',
-                 ] as $key => $val) {
+                     'SITEMAP_PRIORITY_HOME',
+                     'SITEMAP_PRIORITY_PRODUCT',
+                     'SITEMAP_PRIORITY_CATEGORY',
+                     'SITEMAP_PRIORITY_MANUFACTURER',
+                     'SITEMAP_PRIORITY_SUPPLIER',
+                     'SITEMAP_PRIORITY_CMS',
+                     'SITEMAP_FREQUENCY',
+                 ] as $key) {
             if (!Configuration::deleteByName($key)) {
                 return false;
             }
-        }
-
-        $hook = new Hook(Hook::getIdByName(self::HOOK_ADD_URLS));
-        if (Validate::isLoadedObject($hook)) {
-            $hook->delete();
         }
 
         return parent::uninstall() && $this->removeSitemap();
@@ -153,21 +144,33 @@ class Sitemap extends Module
      * Delete all the generated Sitemap files  and drop the addon table.
      *
      * @return boolean
+     * @throws PrestaShopException
      */
     public function removeSitemap()
     {
-        try {
-            $links = Db::getInstance(_PS_USE_SQL_SLAVE_)->executeS('SELECT * FROM `'._DB_PREFIX_.'sitemap_sitemap`');
-            if ($links) {
-                foreach ($links as $link) {
-                    if (!@unlink($this->normalizeDirectory(_PS_ROOT_DIR_).$link['link'])) {
-                        return false;
-                    }
+        $rootDir = $this->normalizeDirectory(_PS_ROOT_DIR_);
+
+        // delete individual sitemap xml files
+        $links = Db::getInstance(_PS_USE_SQL_SLAVE_)->executeS('SELECT link FROM `'._DB_PREFIX_.'sitemap_sitemap`');
+        if (is_array($links)) {
+            foreach ($links as $link) {
+                $filename = $rootDir . $link['link'];
+                if (file_exists($filename)) {
+                    @unlink($filename);
                 }
             }
-        } catch (Exception $e) {
         }
 
+        // delete index sitemap files
+        foreach (Shop::getShops() as $shop) {
+            $id = (int)$shop['id_shop'];
+            $filename = $rootDir . $id . '_index_sitemap.xml';
+            if (file_exists($filename)) {
+                @unlink($filename);
+            }
+        }
+
+        // drop database
         if (!Db::getInstance()->execute('DROP TABLE IF EXISTS `'._DB_PREFIX_.'sitemap_sitemap`')) {
             return false;
         }
@@ -175,6 +178,10 @@ class Sitemap extends Module
         return true;
     }
 
+    /**
+     * @param $directory
+     * @return string
+     */
     protected function normalizeDirectory($directory)
     {
         $last = $directory[strlen($directory) - 1];
@@ -190,45 +197,79 @@ class Sitemap extends Module
         return $directory;
     }
 
+    /**
+     * @return string
+     * @throws HTMLPurifier_Exception
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
+     * @throws SmartyException
+     */
     public function getContent()
     {
+        ShopUrl::resetMainDomainCache();
+
+        $link = Context::getContext()->link;
+        $shopIds = array_map('intval', Shop::getContextListShopID());
+        sort($shopIds);
+
+        $imageTypes = $this->getAllImageTypes();
+
         /* Store the posted parameters and generate a new Google Sitemap files for the current Shop */
         if (Tools::isSubmit('SubmitGsitemap')) {
             Configuration::updateValue('SITEMAP_FREQUENCY', Tools::getValue('sitemap_frequency'));
             Configuration::updateValue('SITEMAP_INDEX_CHECK', '');
-            Configuration::updateValue('SITEMAP_CHECK_IMAGE_FILE', Tools::getValue('sitemap_check_image_file'));
+            foreach ($imageTypes as $class => $_) {
+                Configuration::updateValue('SITEMAP_IMAGE_TYPE_' . strtoupper($class), Tools::getValue($class . '_image_type'));
+            }
             $meta = '';
             if (Tools::getValue('sitemap_meta')) {
                 $meta .= implode(', ', Tools::getValue('sitemap_meta'));
             }
             Configuration::updateValue('SITEMAP_DISABLE_LINKS', $meta);
-            $this->emptySitemap();
-            $this->createSitemap();
+            foreach ($shopIds as $shopId) {
+                $this->emptySitemap($shopId);
+                $this->createSitemap($shopId);
+            }
+            $this->sitemapsGenerated($shopIds);
         } /* if no posted form and the variable [continue] is found in the HTTP request variable keep creating sitemap */
         elseif (Tools::getValue('continue')) {
-            $this->createSitemap();
+            foreach ($shopIds as $shopId) {
+                $this->createSitemap($shopId);
+            }
+            $this->sitemapsGenerated($shopIds);
         }
 
-        /* Empty the Shop domain cache */
-        if (method_exists('ShopUrl', 'resetMainDomainCache')) {
-            ShopUrl::resetMainDomainCache();
+        $sitemaps = [];
+        foreach ($shopIds as $shopId) {
+            $shop = new Shop($shopId);
+            $links = [];
+            $rows = Db::getInstance()->executeS('SELECT link FROM `'._DB_PREFIX_.'sitemap_sitemap` WHERE id_shop = '.$shopId);
+            foreach ($rows as $row) {
+                $links[] = $link->getBaseLink($shopId) . $row['link'];
+            }
+            $sitemaps[] = [
+                'shopId' => $shopId,
+                'shopName' => $shop->name,
+                'indexUrl'  => $link->getBaseLink($shopId) . $shopId . '_index_sitemap.xml',
+                'links' => $links,
+                'cronLink' => rtrim($link->getBaseLink(), '/').'/modules/sitemap/sitemap-cron.php?token='.substr(Tools::encrypt('sitemap/cron'), 0, 10).'&id_shop='.$shopId,
+                'lastExport' => Configuration::getGlobalValue('SITEMAP_LAST_EXPORT_' . $shopId),
+            ];
         }
+
 
         $this->context->smarty->assign(
             [
                 'sitemap_form'             => './index.php?tab=AdminModules&configure=sitemap&token='.Tools::getAdminTokenLite('AdminModules').'&tab_module='.$this->tab.'&module_name=sitemap',
-                'sitemap_cron'             => _PS_BASE_URL_._MODULE_DIR_.'sitemap/sitemap-cron.php?token='.substr(Tools::encrypt('sitemap/cron'), 0, 10).'&id_shop='.$this->context->shop->id,
-                'sitemap_last_export'      => Configuration::get('SITEMAP_LAST_EXPORT'),
                 'sitemap_frequency'        => Configuration::get('SITEMAP_FREQUENCY'),
-                'sitemap_store_url'        => 'http://'.Tools::getShopDomain(false, true).__PS_BASE_URI__,
-                'sitemap_links'            => Db::getInstance()->ExecuteS('SELECT * FROM `'._DB_PREFIX_.'sitemap_sitemap` WHERE id_shop = '.(int) $this->context->shop->id),
-                'store_metas'              => Meta::getMetasByIdLang((int) $this->context->cookie->id_lang),
-                'sitemap_disable_metas'    => explode(',', Configuration::get('SITEMAP_DISABLE_LINKS')),
+                'store_metas'              => Meta::getMetasByIdLang((int) $this->context->language->id),
+                'sitemap_disable_metas'    => $this->getDisabledMetas(),
                 'sitemap_customer_limit'   => [
                     'max_exec_time' => (int) ini_get('max_execution_time'),
                 ],
-                'sitemap_check_image_file' => Configuration::get('SITEMAP_CHECK_IMAGE_FILE'),
-                'shop'                      => $this->context->shop,
+                'sitemaps'                 => $sitemaps,
+                'imageTypes'               => $imageTypes,
+                'selectedImageTypes'       => $this->getSelectedImageTypes(),
             ]
         );
 
@@ -241,19 +282,22 @@ class Sitemap extends Module
      * @param int $idShop
      *
      * @return bool
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
-    public function emptySitemap($idShop = 0)
+    public function emptySitemap($idShop)
     {
         if (!isset($this->context)) {
             $this->context = new Context();
         }
-        if ($idShop != 0) {
-            $this->context->shop = new Shop((int) $idShop);
-        }
+        $this->context->shop = new Shop((int) $idShop);
         $links = Db::getInstance()->ExecuteS('SELECT * FROM `'._DB_PREFIX_.'sitemap_sitemap` WHERE id_shop = '.(int) $this->context->shop->id);
         if ($links) {
             foreach ($links as $link) {
-                @unlink($this->normalizeDirectory(_PS_ROOT_DIR_).$link['link']);
+                $filePath = $this->normalizeDirectory(_PS_ROOT_DIR_) . $link['link'];
+                if (file_exists($filePath)) {
+                    unlink($filePath);
+                }
             }
 
             return Db::getInstance()->Execute('DELETE FROM `'._DB_PREFIX_.'sitemap_sitemap` WHERE id_shop = '.(int) $this->context->shop->id);
@@ -268,20 +312,15 @@ class Sitemap extends Module
      * @param int $idShop Shop identifier
      *
      * @return bool
+     *
+     * @throws HTMLPurifier_Exception
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
-    public function createSitemap($idShop = 0)
+    public function createSitemap($idShop)
     {
-        if (@fopen($this->normalizeDirectory(_PS_ROOT_DIR_).'/test.txt', 'w') == false) {
-            $this->context->smarty->assign('google_maps_error', $this->l('An error occured while trying to check your file permissions. Please adjust your permissions to allow thirty bees to write a file in your root directory.'));
-
-            return false;
-        } else {
-            @unlink($this->normalizeDirectory(_PS_ROOT_DIR_).'test.txt');
-        }
-
-        if ($idShop != 0) {
-            $this->context->shop = new Shop((int) $idShop);
-        }
+        $this->context->shop = new Shop((int) $idShop);
+        ShopUrl::resetMainDomainCache();
 
         $type = Tools::getValue('type') ? Tools::getValue('type') : '';
         $languages = Language::getLanguages(true, $idShop);
@@ -296,8 +335,11 @@ class Sitemap extends Module
                 $langStop = false;
             }
 
+            // set language
+            $this->context->language = new Language($lang['id_lang']);
+
             $linkSitemap = [];
-            foreach ($this->type_array as $typeVal) {
+            foreach ($this->getAllowedLinkTypes() as $typeVal) {
                 if ($type == '' || $type == $typeVal) {
                     $function = '_get'.ucfirst($typeVal).'Link';
                     if (!$this->$function($linkSitemap, $lang, $index, $i, $idObj)) {
@@ -315,19 +357,12 @@ class Sitemap extends Module
                 }
             }
             $this->_recursiveSitemapCreator($linkSitemap, $lang['iso_code'], $index);
-            $page = '';
-            $index = 0;
         }
 
         $this->_createIndexSitemap();
-        Configuration::updateValue('SITEMAP_LAST_EXPORT', date('r'));
-        Tools::file_get_contents('http://www.google.com/webmasters/sitemaps/ping?sitemap='.urlencode('http'.(Configuration::get('PS_SSL_ENABLED') ? 's' : '').'://'.Tools::getShopDomain(false, true).$this->context->shop->physical_uri.$this->context->shop->virtual_uri.$this->context->shop->id.'_index_sitemap.xml'));
+        Configuration::updateGlobalValue('SITEMAP_LAST_EXPORT_'.$idShop, date('r'));
 
-        if ($this->cron) {
-            die();
-        }
-        header('location: ./index.php?tab=AdminModules&configure=sitemap&token='.Tools::getAdminTokenLite('AdminModules').'&tab_module='.$this->tab.'&module_name=sitemap&validation');
-        die();
+        return true;
     }
 
     /**
@@ -336,6 +371,7 @@ class Sitemap extends Module
      * @param int    $index       the index of the current Google Sitemap file
      *
      * @return bool
+     * @throws PrestaShopException
      */
     protected function _recursiveSitemapCreator($linkSitemap, $lang, &$index)
     {
@@ -346,40 +382,71 @@ class Sitemap extends Module
         $sitemapLink = $this->context->shop->id.'_'.$lang.'_'.$index.'_sitemap.xml';
         $writeFd = fopen($this->normalizeDirectory(_PS_ROOT_DIR_).$sitemapLink, 'w');
 
-        fwrite($writeFd, '<?xml version="1.0" encoding="UTF-8"?>'."\r\n".'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">'."\r\n");
-        foreach ($linkSitemap as $key => $file) {
-            fwrite($writeFd, '<url>'."\r\n");
-            $lastmod = (isset($file['lastmod']) && !empty($file['lastmod'])) ? date('c', strtotime($file['lastmod'])) : null;
-            $this->_addSitemapNode($writeFd, htmlspecialchars(strip_tags($file['link'])), $this->_getPriorityPage($file['page']), Configuration::get('SITEMAP_FREQUENCY'), $lastmod);
-            if ($file['image']) {
+        fwrite($writeFd, (
+            '<?xml version="1.0" encoding="UTF-8"?>'.PHP_EOL.
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">'.PHP_EOL
+        ));
+
+        foreach ($linkSitemap as $file) {
+            fwrite($writeFd, '  <url>'.PHP_EOL);
+            $lastModification = (isset($file['lastmod']) && !empty($file['lastmod'])) ? date('c', strtotime($file['lastmod'])) : null;
+            $this->_addSitemapNode(
+                $writeFd,
+                $this->escapeProperty('link', $file),
+                $this->_getPriorityPage($this->resolvePage($file)),
+                Configuration::get('SITEMAP_FREQUENCY'),
+                $lastModification
+            );
+            foreach ($this->getNodeImages($file) as $image) {
                 $this->_addSitemapNodeImage(
-                    $writeFd, htmlspecialchars(strip_tags($file['image']['link'])), isset($file['image']['title_img']) ? htmlspecialchars(
-                    str_replace(
-                        [
-                            "\r\n",
-                            "\r",
-                            "\n",
-                        ], '', strip_tags($file['image']['title_img'])
-                    )
-                ) : '', isset($file['image']['caption']) ? htmlspecialchars(
-                    str_replace(
-                        [
-                            "\r\n",
-                            "\r",
-                            "\n",
-                        ], '', strip_tags($file['image']['caption'])
-                    )
-                ) : ''
+                    $writeFd,
+                    $this->escapeProperty('link', $image),
+                    $this->escapeProperty('title_img', $image),
+                    $this->escapeProperty('caption', $image)
                 );
             }
-            fwrite($writeFd, '</url>'."\r\n");
+            fwrite($writeFd, '  </url>'.PHP_EOL);
         }
-        fwrite($writeFd, '</urlset>'."\r\n");
+        fwrite($writeFd, '</urlset>'.PHP_EOL);
         fclose($writeFd);
         $this->_saveSitemapLink($sitemapLink);
         $index++;
 
         return true;
+    }
+
+    /**
+     * Return array of images in definition
+     *
+     * @param array $definition
+     * @return array
+     */
+    protected function getNodeImages(array $definition)
+    {
+        $images = [];
+        if (array_key_exists('images', $definition)) {
+            $images = $definition['images'];
+        }
+        if (array_key_exists('image', $definition)) {
+            $images[] = $definition['image'];
+        }
+        return array_filter($images);
+    }
+
+    /**
+     * @param string $property
+     * @param array $definition
+     * @return string
+     */
+    protected function escapeProperty($property, $definition)
+    {
+        if (isset($definition[$property])) {
+            $value = $definition[$property];
+            $value = strip_tags($value);
+            $value = str_replace(["\r\n", "\r", "\n"], '', $value);
+            return htmlspecialchars($value);
+        }
+        return '';
     }
 
     /**
@@ -390,10 +457,19 @@ class Sitemap extends Module
      * @param string   $priority
      * @param string   $change_freq
      * @param int      $last_mod the last modification date/time as a timestamp
+     * @throws PrestaShopException
      */
     protected function _addSitemapNode($fd, $loc, $priority, $change_freq, $last_mod = null)
     {
-        fwrite($fd, '<loc>'.(Configuration::get('PS_REWRITING_SETTINGS') ? '<![CDATA['.$loc.']]>' : $loc).'</loc>'."\r\n".'<priority>'.number_format($priority, 1, '.', '').'</priority>'."\r\n".($last_mod ? '<lastmod>'.date('c', strtotime($last_mod)).'</lastmod>' : '')."\r\n".'<changefreq>'.$change_freq.'</changefreq>'."\r\n");
+        fwrite($fd, (
+            '    <loc>'.(Configuration::get('PS_REWRITING_SETTINGS') ? '<![CDATA['.$loc.']]>' : $loc).'</loc>'.PHP_EOL.
+            '    <priority>'.number_format($priority, 1, '.', '').'</priority>'.PHP_EOL.
+            '    <changefreq>'.$change_freq.'</changefreq>'.PHP_EOL
+        ));
+
+        if ($last_mod) {
+            fwrite($fd, '    <lastmod>'.date('c', strtotime($last_mod)).'</lastmod>'.PHP_EOL);
+        }
     }
 
     /**
@@ -401,16 +477,36 @@ class Sitemap extends Module
      *
      * @param string $page
      *
-     * @return float|string|bool
+     * @return float
+     * @throws PrestaShopException
      */
     protected function _getPriorityPage($page)
     {
-        return Configuration::get('SITEMAP_PRIORITY_'.Tools::strtoupper($page)) ? Configuration::get('SITEMAP_PRIORITY_'.Tools::strtoupper($page)) : 0.1;
+        $priority = (float)Configuration::get('SITEMAP_PRIORITY_'.strtoupper($page));
+        if (! $priority) {
+            return 0.1;
+        }
+        return $priority;
     }
 
+    /**
+     * @param resource $fd
+     * @param string $link
+     * @param string $title
+     * @param string $caption
+     * @throws PrestaShopException
+     */
     protected function _addSitemapNodeImage($fd, $link, $title, $caption)
     {
-        fwrite($fd, '<image:image>'."\r\n".'<image:loc>'.(Configuration::get('PS_REWRITING_SETTINGS') ? '<![CDATA['.$link.']]>' : $link).'</image:loc>'."\r\n".'<image:caption><![CDATA['.$caption.']]></image:caption>'."\r\n".'<image:title><![CDATA['.$title.']]></image:title>'."\r\n".'</image:image>'."\r\n");
+        fwrite($fd, '    <image:image>'.PHP_EOL);
+        fwrite($fd, '      <image:loc>'.(Configuration::get('PS_REWRITING_SETTINGS') ? '<![CDATA['.$link.']]>' : $link).'</image:loc>'.PHP_EOL);
+        if ($caption) {
+            fwrite($fd, '      <image:caption><![CDATA['.$caption.']]></image:caption>'.PHP_EOL);
+        }
+        if ($title) {
+            fwrite($fd, '      <image:title><![CDATA['.$title.']]></image:title>'.PHP_EOL);
+        }
+        fwrite($fd, '    </image:image>'.PHP_EOL);
     }
 
     /**
@@ -419,6 +515,7 @@ class Sitemap extends Module
      * @param string $sitemap the name of the generated Google Sitemap file
      *
      * @return bool
+     * @throws PrestaShopException
      */
     protected function _saveSitemapLink($sitemap)
     {
@@ -433,6 +530,8 @@ class Sitemap extends Module
      * Create the index file for all generated sitemaps
      *
      * @return boolean
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
     protected function _createIndexSitemap()
     {
@@ -442,43 +541,42 @@ class Sitemap extends Module
         }
 
         $xml = '<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></sitemapindex>';
-        $xmlFeed = new SimpleXMLElement($xml);
+        try {
+            $xmlFeed = new SimpleXMLElement($xml);
 
-        foreach ($sitemaps as $link) {
-            $sitemap = $xmlFeed->addChild('sitemap');
-            $sitemap->addChild('loc', 'http'.(Configuration::get('PS_SSL_ENABLED') ? 's' : '').'://'.Tools::getShopDomain(false, true).__PS_BASE_URI__.$link['link']);
-            $sitemap->addChild('lastmod', date('c'));
+            foreach ($sitemaps as $link) {
+                $sitemap = $xmlFeed->addChild('sitemap');
+                $sitemap->addChild('loc', 'http' . (Configuration::get('PS_SSL_ENABLED') ? 's' : '') . '://' . Tools::getShopDomain(false, true) . __PS_BASE_URI__ . $link['link']);
+                $sitemap->addChild('lastmod', date('c'));
+            }
+            file_put_contents($this->normalizeDirectory(_PS_ROOT_DIR_) . $this->context->shop->id . '_index_sitemap.xml', $xmlFeed->asXML());
+            return true;
+        } catch (Exception $e) {
+            Logger::addLog("sitemap: Failed to create index sitemap: " . $e);
+            return false;
         }
-        file_put_contents($this->normalizeDirectory(_PS_ROOT_DIR_).$this->context->shop->id.'_index_sitemap.xml', $xmlFeed->asXML());
 
-        return true;
     }
 
     /**
      * Hydrate $link_sitemap with home link
      *
      * @param array  $linkSitemap contain all the links for the Google Sitemap file to be generated
-     * @param string $lang        language of link to add
+     * @param array  $lang        language of link to add
      * @param int    $index       index of the current Google Sitemap file
      * @param int    $i           count of elements added to sitemap main array
      *
      * @return bool
+     * @throws PrestaShopException
      */
     protected function _getHomeLink(&$linkSitemap, $lang, &$index, &$i)
     {
-        if (Configuration::get('PS_SSL_ENABLED')) {
-            $protocol = 'https://';
-        } else {
-            $protocol = 'http://';
-        }
-
-        return $this->_addLinkToSitemap(
+       return $this->_addLinkToSitemap(
             $linkSitemap,
             [
                 'type'  => 'home',
                 'page'  => 'home',
-                'link'  => $protocol.Tools::getShopDomainSsl(false).$this->context->shop->getBaseURI().(method_exists('Language', 'isMultiLanguageActivated') ? Language::isMultiLanguageActivated() ? $lang['iso_code'].'/' : '' : ''),
-                'image' => false,
+                'link'  => $this->context->link->getPageLink('index')
             ],
             $lang['iso_code'],
             $index,
@@ -496,6 +594,7 @@ class Sitemap extends Module
      * @param int    $id_obj      identifier of the object of the link to be added to the Gogle Sitemap file
      *
      * @return bool
+     * @throws PrestaShopException
      */
     public function _addLinkToSitemap(&$linkSitemap, $newLink, $lang, &$index, &$i, $id_obj)
     {
@@ -537,39 +636,46 @@ class Sitemap extends Module
      * Hydrate $link_sitemap with meta link
      *
      * @param array  $linkSitemap contain all the links for the Google Sitemap file to be generated
-     * @param string $lang        language of link to add
+     * @param array  $lang        language of link to add
      * @param int    $index       index of the current Google Sitemap file
      * @param int    $i           count of elements added to sitemap main array
      * @param int    $idMeta      meta object identifier
      *
      * @return bool
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
     protected function _getMetaLink(&$linkSitemap, $lang, &$index, &$i, $idMeta = 0)
     {
-        if (method_exists('ShopUrl', 'resetMainDomainCache')) {
-            ShopUrl::resetMainDomainCache();
+        $link = $this->context->link;
+        $query = (new DbQuery())
+            ->select('id_meta, page')
+            ->from('meta')
+            ->where('configurable > 0')
+            ->where('id_meta > ' . (int)$idMeta)
+            ->orderBy('id_meta ASC');
+
+        $disabledMetas = $this->getDisabledMetas();
+        if ($disabledMetas) {
+            $query->where('id_meta NOT IN (' . implode(',', $disabledMetas).')');
         }
-        $link = new Link();
-        if (version_compare(_PS_VERSION_, '1.6', '>=')) {
-            $metas = Db::getInstance()->ExecuteS('SELECT * FROM `'._DB_PREFIX_.'meta` WHERE `configurable` > 0 AND `id_meta` >= '.(int) $idMeta.' ORDER BY `id_meta` ASC');
-        } else {
-            $metas = Db::getInstance()->ExecuteS('SELECT * FROM `'._DB_PREFIX_.'meta` WHERE `id_meta` >= '.(int) $idMeta.' ORDER BY `id_meta` ASC');
-        }
-        foreach ($metas as $meta) {
-            $url = '';
-            if (!in_array($meta['id_meta'], explode(',', Configuration::get('SITEMAP_DISABLE_LINKS')))) {
-                $urlRewrite = Db::getInstance()->getValue('SELECT url_rewrite, id_shop FROM `'._DB_PREFIX_.'meta_lang` WHERE `id_meta` = '.(int) $meta['id_meta'].' AND `id_shop` ='.(int) $this->context->shop->id.' AND `id_lang` = '.(int) $lang['id_lang']);
-                Dispatcher::getInstance()->addRoute($meta['page'], (isset($urlRewrite) ? $urlRewrite : $meta['page']), $meta['page'], $lang['id_lang']);
-                $uriPath = Dispatcher::getInstance()->createUrl($meta['page'], $lang['id_lang'], [], (bool) Configuration::get('PS_REWRITING_SETTINGS'));
-                $url .= Tools::getShopDomainSsl(true).(($this->context->shop->virtual_uri) ? __PS_BASE_URI__.$this->context->shop->virtual_uri : __PS_BASE_URI__).(Language::isMultiLanguageActivated() ? $lang['iso_code'].'/' : '').ltrim($uriPath, '/');
+
+        $metas = Db::getInstance()->ExecuteS($query);
+        if (is_array($metas)) {
+            foreach ($metas as $meta) {
+                $page = $meta['page'];
+                if (preg_match('#module-([a-z0-9_-]+)-([a-z0-9_]+)$#i', $page, $m)) {
+                    $url = $link->getModuleLink($m[1], $m[2]);
+                } else {
+                    $url = $link->getPageLink($page);
+                }
 
                 if (!$this->_addLinkToSitemap(
                     $linkSitemap,
                     [
-                        'type'  => 'meta',
-                        'page'  => $meta['page'],
-                        'link'  => $url,
-                        'image' => false,
+                        'type' => 'meta',
+                        'page' => $page,
+                        'link' => $url
                     ],
                     $lang['iso_code'],
                     $index,
@@ -588,49 +694,47 @@ class Sitemap extends Module
      * Hydrate $link_sitemap with products link
      *
      * @param array  $linkSitemap contain all the links for the Google Sitemap file to be generated
-     * @param string $lang        language of link to add
+     * @param array  $lang        language of link to add
      * @param int    $index       index of the current Google Sitemap file
      * @param int    $i           count of elements added to sitemap main array
      * @param int    $idProduct   product object identifier
      *
      * @return bool
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
     protected function _getProductLink(&$linkSitemap, $lang, &$index, &$i, $idProduct = 0)
     {
-        $link = new Link();
-        if (method_exists('ShopUrl', 'resetMainDomainCache')) {
-            ShopUrl::resetMainDomainCache();
-        }
-
+        $link = $this->context->link;
         $idProducts = Db::getInstance()->ExecuteS('SELECT `id_product` FROM `'._DB_PREFIX_.'product_shop` WHERE `id_product` >= '.intval($idProduct).' AND `active` = 1 AND `visibility` != \'none\' AND `id_shop`='.$this->context->shop->id.' ORDER BY `id_product` ASC');
 
         foreach ($idProducts as $idProduct) {
             $product = new Product((int) $idProduct['id_product'], false, (int) $lang['id_lang']);
 
-            $url = $link->getProductLink($product, $product->link_rewrite, htmlspecialchars(strip_tags($product->category)), $product->ean13, (int) $lang['id_lang'], (int) $this->context->shop->id, 0, true);
+            $url = $link->getProductLink($product, $product->link_rewrite, $product->category, $product->ean13, (int) $lang['id_lang'], (int) $this->context->shop->id, 0, true);
 
-            $idImage = Product::getCover((int) $idProduct['id_product']);
-            if (isset($idImage['id_image'])) {
-                $imageLink = $this->context->link->getImageLink($product->link_rewrite, $product->id.'-'.(int) $idImage['id_image'], 'large_default');
-                $imageLink = (!in_array(rtrim(Context::getContext()->shop->virtual_uri, '/'), explode('/', $imageLink))) ? str_replace(
-                    [
-                        'https',
-                        Context::getContext()->shop->domain.Context::getContext()->shop->physical_uri,
-                    ], [
-                    'http',
-                    Context::getContext()->shop->domain.Context::getContext()->shop->physical_uri.Context::getContext()->shop->virtual_uri,
-                ], $imageLink
-                ) : $imageLink;
+            $images = [];
+            $productImages = Image::getImages($lang['id_lang'], $idProduct['id_product']);
+            if (is_array($productImages)) {
+                foreach ($productImages as $productImage) {
+                    $id = (int)$productImage['id_image'];
+                    if ($this->imageExists(_PS_PROD_IMG_DIR_ . Image::getImgFolderStatic($id), $id)) {
+                        $imageLink = $link->getImageLink($product->link_rewrite, $id, $this->getImageType('products'));
+                        if ($imageLink) {
+                            $title = $productImage['legend'];
+                            if (! $title) {
+                                $title = $product->name;
+                            }
+                            $images[] = [
+                                'title_img' => $title,
+                                'caption' => $product->description_short,
+                                'link' => $imageLink,
+                            ];
+                        }
+                    }
+                }
             }
-            $fileHeaders = (Configuration::get('SITEMAP_CHECK_IMAGE_FILE')) ? @get_headers($imageLink) : true;
-            $imageProduct = [];
-            if (isset($imageLink) && ($fileHeaders[0] != 'HTTP/1.1 404 Not Found' || $fileHeaders === true)) {
-                $imageProduct = [
-                    'title_img' => htmlspecialchars(strip_tags($product->name)),
-                    'caption'   => htmlspecialchars(strip_tags($product->description_short)),
-                    'link'      => $imageLink,
-                ];
-            }
+
             if (!$this->_addLinkToSitemap(
                 $linkSitemap,
                 [
@@ -638,7 +742,7 @@ class Sitemap extends Module
                     'page'    => 'product',
                     'lastmod' => $product->date_upd,
                     'link'    => $url,
-                    'image'   => $imageProduct,
+                    'images'  => $images,
                 ],
                 $lang['iso_code'],
                 $index,
@@ -659,49 +763,39 @@ class Sitemap extends Module
      * Hydrate $link_sitemap with categories link
      *
      * @param array  $linkSitemap contain all the links for the Google Sitemap file to be generated
-     * @param string $lang        language of link to add
+     * @param array  $lang        language of link to add
      * @param int    $index       index of the current Google Sitemap file
      * @param int    $i           count of elements added to sitemap main array
      * @param int    $idCategory  category object identifier
      *
      * @return bool
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
     protected function _getCategoryLink(&$linkSitemap, $lang, &$index, &$i, $idCategory = 0)
     {
-        $link = new Link();
-        if (method_exists('ShopUrl', 'resetMainDomainCache')) {
-            ShopUrl::resetMainDomainCache();
-        }
-
+        $link = $this->context->link;
         $rootCategoryId = (int) Configuration::get('PS_ROOT_CATEGORY');
         $homeCategoryId = (int) Configuration::get('PS_HOME_CATEGORY');
         $categoryIds = Db::getInstance()->ExecuteS(
             'SELECT c.id_category FROM `'._DB_PREFIX_.'category` c
-				INNER JOIN `'._DB_PREFIX_.'category_shop` cs ON c.`id_category` = cs.`id_category`
-				WHERE c.`id_category` >= '.(int) $idCategory.' AND c.`active` = 1 AND c.`id_category` != '.$rootCategoryId.' AND c.`id_category` != '.$homeCategoryId.' AND c.id_parent > 0 AND c.`id_category` > 0 AND cs.`id_shop` = '.(int) $this->context->shop->id.' AND c.`is_root_category` != 1 ORDER BY c.`id_category` ASC'
+                INNER JOIN `'._DB_PREFIX_.'category_shop` cs ON c.`id_category` = cs.`id_category`
+                WHERE c.`id_category` >= '.(int) $idCategory.' AND c.`active` = 1 AND c.`id_category` != '.$rootCategoryId.' AND c.`id_category` != '.$homeCategoryId.' AND c.id_parent > 0 AND c.`id_category` > 0 AND cs.`id_shop` = '.(int) $this->context->shop->id.' AND c.`is_root_category` != 1 ORDER BY c.`id_category` ASC'
         );
 
         foreach ($categoryIds as $categoryId) {
-            $category = new Category((int) $categoryId['id_category'], (int) $lang['id_lang']);
-            $url = $link->getCategoryLink($category, urlencode($category->link_rewrite), (int) $lang['id_lang']);
+            $id = (int) $categoryId['id_category'];
+            $category = new Category($id, (int) $lang['id_lang']);
+            $url = $link->getCategoryLink($category, $category->link_rewrite, (int) $lang['id_lang']);
 
-            if ($category->id_image) {
-                $imageLink = $this->context->link->getCatImageLink($category->link_rewrite, (int) $category->id_image, 'category_default');
-                $imageLink = (!in_array(rtrim(Context::getContext()->shop->virtual_uri, '/'), explode('/', $imageLink))) ? str_replace(
-                    [
-                        'https',
-                        Context::getContext()->shop->domain.Context::getContext()->shop->physical_uri,
-                    ], [
-                    'http',
-                    Context::getContext()->shop->domain.Context::getContext()->shop->physical_uri.Context::getContext()->shop->virtual_uri,
-                ], $imageLink
-                ) : $imageLink;
-            }
-            $fileHeaders = (Configuration::get('SITEMAP_CHECK_IMAGE_FILE')) ? @get_headers($imageLink) : true;
+            $imageLink = $this->imageExists(_PS_CAT_IMG_DIR_, $id)
+                ? $this->getImageLink('categories', $id, $category->link_rewrite)
+                : null;
+
             $imageCategory = [];
-            if (isset($imageLink) && ($fileHeaders[0] != 'HTTP/1.1 404 Not Found' || $fileHeaders === true)) {
+            if ($imageLink) {
                 $imageCategory = [
-                    'title_img' => htmlspecialchars(strip_tags($category->name)),
+                    'title_img' => $category->name,
                     'link'      => $imageLink,
                 ];
             }
@@ -733,61 +827,55 @@ class Sitemap extends Module
      * return the link elements for the manufacturer object
      *
      * @param array  $linkSitemap    contain all the links for the Google Sitemap file to be generated
-     * @param string $lang           language of link to add
+     * @param array  $lang           language of link to add
      * @param int    $index          index of the current Google Sitemap file
      * @param int    $i              count of elements added to sitemap main array
      * @param int    $idManufacturer manufacturer object identifier
      *
      * @return bool
+     * @throws PrestaShopException
      */
     protected function _getManufacturerLink(&$linkSitemap, $lang, &$index, &$i, $idManufacturer = 0)
     {
-        $link = new Link();
-        if (method_exists('ShopUrl', 'resetMainDomainCache')) {
-            ShopUrl::resetMainDomainCache();
-        }
-        $manufacturersId = Db::getInstance()->ExecuteS(
-            'SELECT m.`id_manufacturer` FROM `'._DB_PREFIX_.'manufacturer` m
-			INNER JOIN `'._DB_PREFIX_.'manufacturer_lang` ml on m.`id_manufacturer` = ml.`id_manufacturer`'.
-            ($this->tableColumnExists(_DB_PREFIX_.'manufacturer_shop') ? ' INNER JOIN `'._DB_PREFIX_.'manufacturer_shop` ms ON m.`id_manufacturer` = ms.`id_manufacturer` ' : '').
-            ' WHERE m.`active` = 1  AND m.`id_manufacturer` >= '.(int) $idManufacturer.
-            ($this->tableColumnExists(_DB_PREFIX_.'manufacturer_shop') ? ' AND ms.`id_shop` = '.(int) $this->context->shop->id : '').
-            ' AND ml.`id_lang` = '.(int) $lang['id_lang'].
-            ' ORDER BY m.`id_manufacturer` ASC'
+        $link = $this->context->link;
+        $manufacturersId = $this->getIds(
+            'SELECT m.`id_manufacturer` AS `id`
+            FROM `'._DB_PREFIX_.'manufacturer` m
+            INNER JOIN `'._DB_PREFIX_.'manufacturer_lang` ml on m.`id_manufacturer` = ml.`id_manufacturer`
+            INNER JOIN `'._DB_PREFIX_.'manufacturer_shop` ms ON m.`id_manufacturer` = ms.`id_manufacturer`
+            WHERE m.`active` = 1
+            AND m.`id_manufacturer` >= '.(int) $idManufacturer.'
+            AND ms.`id_shop` = '.(int) $this->context->shop->id . '
+            AND ml.`id_lang` = '.(int) $lang['id_lang'].'
+            ORDER BY m.`id_manufacturer` ASC'
         );
-        foreach ($manufacturersId as $manufacturerId) {
+
+        foreach ($manufacturersId as $id) {
+
             // Check if manufacturer has any active product
-            $query = new \DbQuery();
+            $query = new DbQuery();
             $query->select('COUNT(*)');
             $query->from('product', 'p');
-            $query->innerJoin('product_shop', 'ps', 'p.id_product=ps.id_product AND ps.id_shop='.\Context::getContext()->shop->id);
-            $query->where('p.id_manufacturer = ' . $manufacturerId['id_manufacturer']);
+            $query->innerJoin('product_shop', 'ps', 'p.id_product=ps.id_product AND ps.id_shop='. Context::getContext()->shop->id);
+            $query->where('p.id_manufacturer = ' . $id);
             $query->where('ps.active = 1');
 
-            if (!\Db::getInstance()->getValue($query)) {
+            if (! Db::getInstance()->getValue($query)) {
                 continue;
             }
 
-            $manufacturer = new Manufacturer((int) $manufacturerId['id_manufacturer'], $lang['id_lang']);
+            $manufacturer = new Manufacturer($id, $lang['id_lang']);
             $url = $link->getManufacturerLink($manufacturer, $manufacturer->link_rewrite, $lang['id_lang']);
 
-            $imageLink = 'http'.(Configuration::get('PS_SSL_ENABLED') ? 's' : '').'://'.Tools::getMediaServer(_THEME_MANU_DIR_)._THEME_MANU_DIR_.((!file_exists(_PS_MANU_IMG_DIR_.'/'.(int) $manufacturer->id.'-medium_default.jpg')) ? $lang['iso_code'].'-default' : (int) $manufacturer->id).'-medium_default.jpg';
-            $imageLink = (!in_array(rtrim(Context::getContext()->shop->virtual_uri, '/'), explode('/', $imageLink))) ? str_replace(
-                [
-                    'https',
-                    Context::getContext()->shop->domain.Context::getContext()->shop->physical_uri,
-                ], [
-                'http',
-                Context::getContext()->shop->domain.Context::getContext()->shop->physical_uri.Context::getContext()->shop->virtual_uri,
-            ], $imageLink
-            ) : $imageLink;
+            $imageLink = $this->imageExists(_PS_MANU_IMG_DIR_, $id)
+                ? $this->getImageLink('manufacturers', $id)
+                : null;
 
-            $fileHeaders = (Configuration::get('SITEMAP_CHECK_IMAGE_FILE')) ? @get_headers($imageLink) : true;
             $manufacturerImage = [];
-            if ($fileHeaders[0] != 'HTTP/1.1 404 Not Found' || $fileHeaders === true) {
+            if ($imageLink) {
                 $manufacturerImage = [
-                    'title_img' => htmlspecialchars(strip_tags($manufacturer->name)),
-                    'caption'   => htmlspecialchars(strip_tags($manufacturer->short_description)),
+                    'title_img' => $manufacturer->name,
+                    'caption'   => $manufacturer->short_description,
                     'link'      => $imageLink,
                 ];
             }
@@ -803,7 +891,7 @@ class Sitemap extends Module
                 $lang['iso_code'],
                 $index,
                 $i,
-                $manufacturerId['id_manufacturer']
+                $id
             )) {
                 return false;
             }
@@ -812,89 +900,59 @@ class Sitemap extends Module
         return true;
     }
 
-    protected function tableColumnExists($tableName, $column = null)
-    {
-        if (array_key_exists($tableName, $this->sql_checks)) {
-            if (!empty($column) && array_key_exists($column, $this->sql_checks[$tableName])) {
-                return $this->sql_checks[$tableName][$column];
-            } else {
-                return $this->sql_checks[$tableName];
-            }
-        }
-
-        $table = Db::getInstance()->ExecuteS('SHOW TABLES LIKE \''.$tableName.'\'');
-        if (empty($column)) {
-            if (count($table) < 1) {
-                return $this->sql_checks[$tableName] = false;
-            } else {
-                $this->sql_checks[$tableName] = true;
-            }
-        } else {
-            $table = Db::getInstance()->ExecuteS('SELECT * FROM `'.$tableName.'` LIMIT 1');
-
-            return $this->sql_checks[$tableName][$column] = array_key_exists($column, current($table));
-        }
-
-        return true;
-    }
-
     /**
      * @param array  $linkSitemap contain all the links for the Google Sitemap file to be generated
-     * @param string $lang        language of link to add
+     * @param array  $lang        language of link to add
      * @param int    $index       index of the current Google Sitemap file
      * @param int    $i           count of elements added to sitemap main array
      * @param int    $idSupplier  supplier object identifier
      *
      * @return bool
+     * @throws PrestaShopException
      */
     protected function _getSupplierLink(&$linkSitemap, $lang, &$index, &$i, $idSupplier = 0)
     {
-        $link = new Link();
-        if (method_exists('ShopUrl', 'resetMainDomainCache')) {
-            ShopUrl::resetMainDomainCache();
-        }
-        $suppliersId = Db::getInstance()->ExecuteS(
-            'SELECT s.`id_supplier` FROM `'._DB_PREFIX_.'supplier` s
-			INNER JOIN `'._DB_PREFIX_.'supplier_lang` sl ON s.`id_supplier` = sl.`id_supplier` '.
-            ($this->tableColumnExists(_DB_PREFIX_.'supplier_shop') ? 'INNER JOIN `'._DB_PREFIX_.'supplier_shop` ss ON s.`id_supplier` = ss.`id_supplier`' : '').'
-			WHERE s.`active` = 1 AND s.`id_supplier` >= '.(int) $idSupplier.
-            ($this->tableColumnExists(_DB_PREFIX_.'supplier_shop') ? ' AND ss.`id_shop` = '.(int) $this->context->shop->id : '').'
-			AND sl.`id_lang` = '.(int) $lang['id_lang'].'
-			ORDER BY s.`id_supplier` ASC'
+        $link = $this->context->link;
+        $suppliersId = $this->getIds(
+            'SELECT s.`id_supplier` as `id`
+            FROM `'._DB_PREFIX_.'supplier` s
+            INNER JOIN `'._DB_PREFIX_.'supplier_lang` sl ON s.`id_supplier` = sl.`id_supplier`
+            INNER JOIN `'._DB_PREFIX_.'supplier_shop` ss ON s.`id_supplier` = ss.`id_supplier`
+            WHERE s.`active` = 1 
+            AND s.`id_supplier` >= '.(int) $idSupplier.'
+            AND ss.`id_shop` = '.(int) $this->context->shop->id.'
+            AND sl.`id_lang` = '.(int) $lang['id_lang'].'
+            ORDER BY s.`id_supplier` ASC'
         );
-        foreach ($suppliersId as $supplierId) {
-            $supplier = new Supplier((int) $supplierId['id_supplier'], $lang['id_lang']);
+        foreach ($suppliersId as $id) {
+            $supplier = new Supplier($id, $lang['id_lang']);
             $url = $link->getSupplierLink($supplier, $supplier->link_rewrite, $lang['id_lang']);
 
-            $imageLink = 'http://'.Tools::getMediaServer(_THEME_SUP_DIR_)._THEME_SUP_DIR_.((!file_exists(_THEME_SUP_DIR_.'/'.(int) $supplier->id.'-medium_default.jpg')) ? $lang['iso_code'].'-default' : (int) $supplier->id).'-medium_default.jpg';
-            $imageLink = (!in_array(rtrim(Context::getContext()->shop->virtual_uri, '/'), explode('/', $imageLink))) ? str_replace(
-                [
-                    'https',
-                    Context::getContext()->shop->domain.Context::getContext()->shop->physical_uri,
-                ], [
-                'http',
-                Context::getContext()->shop->domain.Context::getContext()->shop->physical_uri.Context::getContext()->shop->virtual_uri,
-            ], $imageLink
-            ) : $imageLink;
+            $imageLink = $this->imageExists(_PS_SUPP_IMG_DIR_, $id)
+                ? $this->getImageLink('suppliers', $id)
+                : null;
 
-            $fileHeaders = (Configuration::get('SITEMAP_CHECK_IMAGE_FILE')) ? @get_headers($imageLink) : true;
             $supplierImage = [];
-            if ($fileHeaders[0] != 'HTTP/1.1 404 Not Found' || $fileHeaders === true) {
+            if ($imageLink) {
                 $supplierImage = [
-                    'title_img' => htmlspecialchars(strip_tags($supplier->name)),
-                    'link'      => 'http'.(Configuration::get('PS_SSL_ENABLED') ? 's' : '').'://'.Tools::getMediaServer(_THEME_SUP_DIR_)._THEME_SUP_DIR_.((!file_exists(_THEME_SUP_DIR_.'/'.(int) $supplier->id.'-medium_default.jpg')) ? $lang['iso_code'].'-default' : (int) $supplier->id).'-medium_default.jpg',
+                    'title_img' => $supplier->name,
+                    'link'      => $imageLink
                 ];
             }
             if (!$this->_addLinkToSitemap(
-                $linkSitemap, [
-                'type'    => 'supplier',
-                'page'    => 'supplier',
-                'lastmod' => $supplier->date_upd,
-                'link'    => $url,
-                'image'   => $supplierImage,
-            ], $lang['iso_code'], $index, $i, $supplierId['id_supplier']
-            )
-            ) {
+                $linkSitemap,
+                [
+                    'type'    => 'supplier',
+                    'page'    => 'supplier',
+                    'lastmod' => $supplier->date_upd,
+                    'link'    => $url,
+                    'image'   => $supplierImage,
+                ],
+                $lang['iso_code'],
+                $index,
+                $i,
+                $id
+            )) {
                 return false;
             }
         }
@@ -906,50 +964,51 @@ class Sitemap extends Module
      * return the link elements for the CMS object
      *
      * @param array  $linkSitemap contain all the links for the Google Sitemap file to be generated
-     * @param string $lang        the language of link to add
+     * @param array  $lang        the language of link to add
      * @param int    $index       the index of the current Google Sitemap file
      * @param int    $i           the count of elements added to sitemap main array
      * @param int    $idCms       the CMS object identifier
      *
      * @return bool
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
      */
     protected function _getCmsLink(&$linkSitemap, $lang, &$index, &$i, $idCms = 0)
     {
-        $link = new Link();
-        if (method_exists('ShopUrl', 'resetMainDomainCache')) {
-            ShopUrl::resetMainDomainCache();
-        }
-        $cmssId = Db::getInstance()->ExecuteS(
-            'SELECT c.`id_cms` FROM `'._DB_PREFIX_.'cms` c INNER JOIN `'._DB_PREFIX_.'cms_lang` cl ON c.`id_cms` = cl.`id_cms` '.
-            ($this->tableColumnExists(_DB_PREFIX_.'supplier_shop') ? 'INNER JOIN `'._DB_PREFIX_.'cms_shop` cs ON c.`id_cms` = cs.`id_cms` ' : '').
-            'INNER JOIN `'._DB_PREFIX_.'cms_category` cc ON c.id_cms_category = cc.id_cms_category AND cc.active = 1
-				WHERE c.`active` =1 AND c.`indexation` =1 AND c.`id_cms` >= '.(int) $idCms.
-            ($this->tableColumnExists(_DB_PREFIX_.'supplier_shop') ? ' AND cs.id_shop = '.(int) $this->context->shop->id : '').
-            ' AND cl.`id_lang` = '.(int) $lang['id_lang'].
-            ' ORDER BY c.`id_cms` ASC'
+        $link = $this->context->link;
+        $cmssId = $this->getIds(
+            'SELECT c.`id_cms` as `id`
+            FROM `'._DB_PREFIX_.'cms` c
+            INNER JOIN `'._DB_PREFIX_.'cms_shop` cs ON (c.`id_cms` = cs.`id_cms`)
+            INNER JOIN `'._DB_PREFIX_.'cms_lang` cl ON (c.`id_cms` = cl.`id_cms` AND cl.id_shop = cs.id_shop)
+            INNER JOIN `'._DB_PREFIX_.'cms_category` cc ON (c.id_cms_category = cc.id_cms_category AND cc.active = 1)
+            WHERE c.`active` = 1
+            AND c.`indexation` = 1 
+            AND c.`id_cms` >= '.(int) $idCms.'
+            AND cs.id_shop = '.(int) $this->context->shop->id.'
+            AND cl.`id_lang` = '.(int) $lang['id_lang'].'
+            ORDER BY c.`id_cms` ASC'
         );
 
-        if (is_array($cmssId)) {
-            foreach ($cmssId as $cmsId) {
-                $cms = new CMS((int) $cmsId['id_cms'], $lang['id_lang']);
-                $cms->link_rewrite = urlencode((is_array($cms->link_rewrite) ? $cms->link_rewrite[(int) $lang['id_lang']] : $cms->link_rewrite));
-                $url = $link->getCMSLink($cms, null, null, $lang['id_lang']);
+        foreach ($cmssId as $id) {
+            $cms = new CMS($id, $lang['id_lang']);
+            $cms->link_rewrite = (is_array($cms->link_rewrite) ? $cms->link_rewrite[(int) $lang['id_lang']] : $cms->link_rewrite);
+            $url = $link->getCMSLink($cms, null, null, $lang['id_lang']);
 
-                if (!$this->_addLinkToSitemap(
-                    $linkSitemap,
-                    [
-                        'type'  => 'cms',
-                        'page'  => 'cms',
-                        'link'  => $url,
-                        'image' => false,
-                    ],
-                    $lang['iso_code'],
-                    $index,
-                    $i,
-                    $cmsId['id_cms']
-                )) {
-                    return false;
-                }
+            if (!$this->_addLinkToSitemap(
+                $linkSitemap,
+                [
+                    'type'  => 'cms',
+                    'page'  => 'cms',
+                    'link'  => $url,
+                    'image' => false,
+                ],
+                $lang['iso_code'],
+                $index,
+                $i,
+                $id
+            )) {
+                return false;
             }
         }
 
@@ -964,12 +1023,13 @@ class Sitemap extends Module
      * The 'type' index is automatically set to 'module' (not sure here, should we be safe or trust modules?).
      *
      * @param array  $linkSitemap by ref. accumulator for all the links for the Google Sitemap file to be generated
-     * @param string $lang        the language being processed
+     * @param array  $lang        the language being processed
      * @param int    $index       the index of the current Google Sitemap file
      * @param int    $i           the count of elements added to sitemap main array
      * @param int    $numLink     restart at link number #$num_link
      *
      * @return boolean
+     * @throws PrestaShopException
      */
     protected function _getModuleLink(&$linkSitemap, $lang, &$index, &$i, $numLink = 0)
     {
@@ -978,14 +1038,17 @@ class Sitemap extends Module
             return true;
         }
         $links = [];
-        foreach ($modulesLinks as $moduleLinks) {
+        foreach ($modulesLinks as $moduleName => $moduleLinks) {
+            foreach ($moduleLinks as &$moduleLink) {
+                $moduleLink['type'] = 'module';
+                $moduleLink['moduleName'] = $moduleName;
+            }
             $links = array_merge($links, $moduleLinks);
         }
-        foreach ($moduleLinks as $n => $link) {
+        foreach ($links as $n => $link) {
             if ($numLink > $n) {
                 continue;
             }
-            $link['type'] = 'module';
             if (!$this->_addLinkToSitemap($linkSitemap, $link, $lang['iso_code'], $index, $i, $n)) {
                 return false;
             }
@@ -993,4 +1056,206 @@ class Sitemap extends Module
 
         return true;
     }
+
+    /**
+     * @param string $class
+     * @param int $id
+     * @param string $rewrite
+     * @return string
+     * @throws PrestaShopException
+     */
+    protected function getImageLink($class, $id, $rewrite='')
+    {
+        return Link::getGenericImageLink(
+            $class,
+            $id,
+            $this->getImageType($class),
+            '',
+            null,
+            $rewrite
+        );
+    }
+
+    /**
+     * Returns image type for given $class
+     *
+     * @param $class
+     * @return string
+     * @throws PrestaShopException
+     */
+    protected function getImageType($class)
+    {
+        $types = $this->getSelectedImageTypes();
+        if (! array_key_exists($class, $types)) {
+            throw new RuntimeException('Invalid class: ' . $class);
+        }
+        return $types[$class];
+    }
+
+    /**
+     * Returns selected image types for each image class
+     *
+     * @return array
+     * @throws PrestaShopException
+     */
+    protected function getSelectedImageTypes()
+    {
+        $selectedTypes = [];
+        foreach ($this->getAllImageTypes() as $class => $types) {
+            $selected = Configuration::get('SITEMAP_IMAGE_TYPE_' . strtoupper($class));
+            if ($selected && in_array($selected, $types)) {
+                $selectedTypes[$class] = $selected;
+            } else {
+                if (count($types) > 0) {
+                    $selectedTypes[$class] = $types[0];
+                } else {
+                    $selectedTypes[$class] = '';
+                }
+            }
+        }
+        return $selectedTypes;
+    }
+
+    /**
+     * Return image types indexed by class
+     *
+     * @throws PrestaShopException
+     * @return array
+     */
+    protected function getAllImageTypes()
+    {
+        $types = [
+            'products' => [],
+            'categories' => [],
+            'suppliers' => [],
+            'manufacturers' => []
+        ];
+        foreach (ImageType::getImagesTypes(null, true) as $typeDefinition) {
+            if ($typeDefinition['products']) {
+                $types['products'][] = $typeDefinition['name'];
+            }
+            if ($typeDefinition['categories']) {
+                $types['categories'][] = $typeDefinition['name'];
+            }
+            if ($typeDefinition['suppliers']) {
+                $types['suppliers'][] = $typeDefinition['name'];
+            }
+            if ($typeDefinition['manufacturers']) {
+                $types['manufacturers'][] = $typeDefinition['name'];
+            }
+        }
+        return $types;
+    }
+
+    /**
+     * @param string $sql
+     * @param string $idColumn
+     * @return int[]
+     * @throws PrestaShopException
+     */
+    protected function getIds($sql, $idColumn='id')
+    {
+        $results = Db::getInstance(_PS_USE_SQL_SLAVE_)->executeS($sql);
+        if (is_array($results)) {
+            return array_map('intval', array_column($results, $idColumn));
+        }
+        return [];
+    }
+
+    /**
+     * Returns link types that are allowed for generation
+     *
+     * @return array
+     * @throws PrestaShopException
+     */
+    protected function getAllowedLinkTypes()
+    {
+        static $typeArray = null;
+        if (is_null($typeArray)) {
+            $typeArray = ['home', 'meta', 'product', 'category', 'manufacturer', 'supplier', 'cms', 'module'];
+
+            $metas = Meta::getMetas();
+            $disabledMetas = $this->getDisabledMetas();
+            foreach ($metas as $meta) {
+                if (in_array($meta['id_meta'], $disabledMetas)) {
+                    if (($key = array_search($meta['page'], $typeArray)) !== false) {
+                        unset($typeArray[$key]);
+                    }
+                }
+            }
+        }
+        return $typeArray;
+    }
+
+    /**
+     * @return int[]
+     * @throws PrestaShopException
+     */
+    protected function getDisabledMetas()
+    {
+        $disabledLink = Configuration::get('SITEMAP_DISABLE_LINKS');
+        if ($disabledLink) {
+            return array_filter(array_map('intval', explode(',', $disabledLink)));
+        }
+        return [];
+    }
+
+    /**
+     * @param array $link
+     * @return string
+     */
+    protected function resolvePage($link)
+    {
+        if (isset($link['page'])) {
+            return $link['page'];
+        }
+        if (isset($link['moduleName'])) {
+            return $link['moduleName'];
+        }
+        return 'unknown-page';
+    }
+
+    /**
+     * @param int[] $shopIds
+     *
+     * @return void
+     *
+     * @throws PrestaShopDatabaseException
+     * @throws PrestaShopException
+     */
+    protected function sitemapsGenerated($shopIds)
+    {
+        $context = Context::getContext();
+        /** @var AdminController $controller */
+        $controller = $context->controller;
+        $link = $context->link;
+
+        $cnt = count($shopIds);
+        $controller->confirmations[] = ($cnt > 1)
+            ? sprintf($this->l('Sitemaps for %s stores have been generated'), $cnt)
+            : sprintf($this->l('Sitemap for %s has been generated'), $context->shop->name);
+
+        $controller->setRedirectAfter($link->getAdminLink('AdminModules', true, [
+            'configure' => $this->name,
+            'module_name' => $this->name
+        ]));
+    }
+
+    /**
+     * @param string $directory
+     * @param string $name
+     *
+     * @return bool
+     *
+     * @throws PrestaShopException
+     */
+    protected function imageExists($directory, $name)
+    {
+        if (method_exists(ImageManager::class, 'getSourceImage')) {
+            return (bool)ImageManager::getSourceImage($directory, $name);
+        }
+        // legacy check functionality
+        return file_exists(ltrim($directory, '/') . '/' . $name . '.jpg');
+    }
+
 }
