@@ -719,7 +719,7 @@ class Sitemap extends Module
                 foreach ($productImages as $productImage) {
                     $id = (int)$productImage['id_image'];
                     if ($this->imageExists(_PS_PROD_IMG_DIR_ . Image::getImgFolderStatic($id), $id)) {
-                        $imageLink = $link->getImageLink($product->link_rewrite, $id, $this->getImageType('products'));
+                        $imageLink = $link->getImageLink($product->link_rewrite, $id); // Genzo change -> removed image type -> we want original files
                         if ($imageLink) {
                             $title = $productImage['legend'];
                             if (! $title) {
