@@ -4,3 +4,6 @@
 /config*.xml
 
 sitemap-*.zip
+/.idea/modules.xml
+/.idea/sitemap.iml
+/.idea/workspace.xml

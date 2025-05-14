@@ -711,6 +711,11 @@ class Sitemap extends Module
         foreach ($idProducts as $idProduct) {
             $product = new Product((int) $idProduct['id_product'], false, (int) $lang['id_lang']);
 
+            // Genzo change: don't use fundus products
+            if (str_contains(strtolower($product->reference), 'fundus')) {
+                continue;
+            }
+
             $url = $link->getProductLink($product, $product->link_rewrite, $product->category, $product->ean13, (int) $lang['id_lang'], (int) $this->context->shop->id, 0, true);
 
             $images = [];
