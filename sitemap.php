@@ -709,13 +709,15 @@ class Sitemap extends Module
         $idProducts = Db::getInstance()->ExecuteS('SELECT `id_product` FROM `'._DB_PREFIX_.'product_shop` WHERE `id_product` >= '.intval($idProduct).' AND `active` = 1 AND `visibility` != \'none\' AND `id_shop`='.$this->context->shop->id.' ORDER BY `id_product` ASC');
 
         foreach ($idProducts as $idProduct) {
-            $product = new Product((int) $idProduct['id_product'], false, (int) $lang['id_lang']);
 
             // Genzo change: don't use fundus products
-            if (str_contains(strtolower($product->reference), 'fundus')) {
+            $productExt = new \ErpModule\ProductExtensionErp((int) $idProduct['id_product']);
+
+            if ($productExt->product_character==\ErpModule\ProductExtensionErp::PRODUCT_CHARACTER_FUNDUS) {
                 continue;
             }
 
+            $product = new Product((int) $idProduct['id_product'], false, (int) $lang['id_lang']);
             $url = $link->getProductLink($product, $product->link_rewrite, $product->category, $product->ean13, (int) $lang['id_lang'], (int) $this->context->shop->id, 0, true);
 
             $images = [];
